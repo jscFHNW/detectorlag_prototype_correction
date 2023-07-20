@@ -8,27 +8,28 @@ from PIL import Image
 from pathlib import Path
 from datetime import datetime
 import time
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import median_filter
 
 start = time.time()
 
 # Previous image contribution factor
-contrib_factor = 0.1
-sim_factor = 0.1
+contrib_factor_start = 0.001
+contrib_factor_end = 0.002
+contrib_factor_step = 0.001
 
-# Sigma for gauss filter
-sigma = 1
+filter_size = 3
+
 # Directories
-ct_dir = f'C:\\Users\\Jonathan Schaffner\\FHNW_Projct\\IP5\\GeneratedData\\SimulatedAfterglowImg\\Scans\\{sim_factor}'
+ct_dir = f'C:\\Users\\Jonathan Schaffner\\FHNW_Projct\\IP5\\ExperimentData\\Converted\\06'
 output_base_dir = 'C:\\Users\Jonathan Schaffner\\FHNW_Projct\\IP5\\GeneratedData'
 
 # MuhRec config
 muhrec="C:\\Users\\Jonathan Schaffner\\FHNW_Projct\\IP5\\muhrec\\MuhRec.exe"
-cfgpath="C:\\Users\\Jonathan Schaffner\\FHNW_Projct\\IP5\\woodRecon.xml"
+cfgpath="C:\\Users\\Jonathan Schaffner\\FHNW_Projct\\IP5\\expertimentWood.xml"
 
 # Image file name properties
-postfix = '####.tif'
-prefix_ct = 'merged_'
+postfix = '#####.tif'
+prefix_ct = 'tomo'
 prefix_dc = 'dc_'
 prefix_ob = 'ob_'
 prefix_merged='corrected_'
@@ -37,28 +38,15 @@ number_fill = postfix.count('#')
 
 # setup directories and filenames
 timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-output_dir = Path(os.path.join(output_base_dir, 'CorrectAfterglowSim', timestamp + '__' + prefix_ct + f'Sim={sim_factor},Contrib={contrib_factor},Sigma={sigma}'))
-scans_dir = Path(os.path.join(output_dir, 'Scans'))
-recon_dir = Path(os.path.join(output_dir, 'Recon'))
+output_dir = Path(os.path.join(output_base_dir, 'CorrectAfterglowSim', f'{timestamp}_{prefix_ct}'))
+# output_dir = Path(os.path.join(output_base_dir, 'CorrectAfterglowSim', timestamp + '__' + prefix_ct + f'_cf={contrib_factor}_fs={filter_size}'))
+scans_dir = Path(os.path.join(output_dir, f'Scans_c'))
+recon_dir = Path(os.path.join(output_dir, f'Recon_c'))
 
-coef_output_dir_raw           = Path(os.path.join(scans_dir, f"U'=U-{contrib_factor}xG(U-1,{sigma})"))
-coef_output_dir_raw_no_gauss  = Path(os.path.join(scans_dir, f"U'=U-{contrib_factor}x(U-1)"))
-coef_output_dir_corr          = Path(os.path.join(scans_dir, f"U'=U-{contrib_factor}xG((U-1)',{sigma})"))
-coef_output_dir_corr_no_gauss = Path(os.path.join(scans_dir, f"U'=U-{contrib_factor}x(U-1)'"))
-coef_output_dir_raw_no_DC     = Path(os.path.join(scans_dir, f"U'=U-{contrib_factor}x(G(U-1,{sigma})-DC)"))
-coef_output_dir_raw_no_DC_g   = Path(os.path.join(scans_dir, f"U'=U-{contrib_factor}xG(U-1-DC,{sigma})"))
-
-
-output_dirs = [coef_output_dir_raw,
-               coef_output_dir_raw_no_gauss,
-               coef_output_dir_corr,
-               coef_output_dir_corr_no_gauss,
-               coef_output_dir_raw_no_DC,
-               coef_output_dir_raw_no_DC_g]
 
 # Create empty directoris
-for sub_dir in output_dirs :
-    sub_dir.mkdir(parents=True)
+scans_dir.mkdir(parents=True)
+recon_dir.mkdir(parents=True)
 
 # file name of the images
 ct_files = []
@@ -82,64 +70,46 @@ def main():
 
     load_images()
 
-    # get average
-    dc_avr = np.mean(list(dc_imgs_arr.values()), axis=0)
-        
-    coef_label = str(round(contrib_factor, 2))
+    for contrib_factor in np.arange(contrib_factor_start, contrib_factor_end, contrib_factor_step):
 
-    # set/reset prev_image
-    prev_raw_image = np.zeros_like(dc_avr)
-    prev_corr_image = np.zeros_like(dc_avr)
+        # get average
+        dc_avr = np.mean(list(dc_imgs_arr.values()), axis=0)
+            
+        coef_label = str(round(contrib_factor, 3))
 
-    print(f"Processing images with contribution factor {coef_label}!")
+        # Create subdir
+        img_dir_path = os.path.join(scans_dir, coef_label)
+        Path(img_dir_path).mkdir(parents=True)
 
-    # iterate through projections
-    for idx, file_name in enumerate(ct_files) :
+        # prev_image to 0
+        prev_corr_image = np.zeros_like(dc_avr)
 
-        img = ct_imgs[file_name]
+        print(f"Processing images with contribution factor {coef_label}!")
 
-        # get tiffinfo from current image
-        info = img.tag_v2
-        
-        # current uncorrected image
-        img_arr = ct_imgs_arr[file_name]
-        
-        # apply correction formula with the uncorrected previous image
-        actual_img_arr_raw          = img_arr - contrib_factor * gaussian_filter(prev_raw_image, sigma)        # U' = U - a * G(U-1)
-        actual_img_arr_raw_no_gauss = img_arr - contrib_factor * prev_raw_image                                # U' = U - a * (U-1)
-        
-        # apply correction formula with the corrected previous image
-        actual_img_arr_corr          = img_arr - contrib_factor * gaussian_filter(prev_corr_image, sigma)      # U' = U - a * G((U-1)')
-        actual_img_arr_corr_no_gauss = img_arr - contrib_factor * prev_corr_image                              # U' = U - a * (U-1)'
+        # iterate through projections
+        for idx, file_name in enumerate(ct_files) :
 
-         # apply correction formula with the uncorrected previous image and subtracting the DC
-         # first image factor is 0
-        actual_img_arr_raw_no_DC    = img_arr - (contrib_factor if idx > 0 else 0) * (gaussian_filter(prev_raw_image, sigma) - dc_avr)       # U' = U - a * (G(U-1)-DC)
-        actual_img_arr_raw_no_DC_g  = img_arr - (contrib_factor if idx > 0 else 0) * gaussian_filter(prev_raw_image - dc_avr, sigma)        # U' = U - a * G(U-1-DC)
+            img = ct_imgs[file_name]
 
-        # create corrected image
-        actual_img_raw = Image.fromarray(np.clip(actual_img_arr_raw, 0, 65535).astype('uint16'))
-        actual_img_raw_no_gauss = Image.fromarray(np.clip(actual_img_arr_raw_no_gauss, 0, 65535).astype('uint16'))
-        actual_img_corr = Image.fromarray(np.clip(actual_img_arr_corr, 0, 65535).astype('uint16'))
-        actual_img_raw_corr_no_gauss = Image.fromarray(np.clip(actual_img_arr_corr_no_gauss, 0, 65535).astype('uint16'))
-        
-        actual_img_raw_no_DC = Image.fromarray(np.clip(actual_img_arr_raw_no_DC, 0, 65535).astype('uint16'))
-        actual_img_raw_no_DC_g = Image.fromarray(np.clip(actual_img_arr_raw_no_DC_g, 0, 65535).astype('uint16'))
+            # get tiffinfo from current image
+            info = img.tag_v2
+            
+            # current uncorrected image
+            img_arr = ct_imgs_arr[file_name]
+            
+            # apply correction formula with the corrected previous image
+            actual_img_arr_corr = img_arr - contrib_factor * median_filter(prev_corr_image, filter_size)      # U' = U - a * G((previous_corrected_image)')
 
-        # save image with tiffinfo from original image to preserve metadata
-        actual_img_raw.save(os.path.join(coef_output_dir_raw , prefix_merged + str(idx).zfill(number_fill) + ".tif"), format='TIFF', tiffinfo=info)
-        actual_img_raw_no_gauss.save(os.path.join(coef_output_dir_raw_no_gauss , prefix_merged + str(idx).zfill(number_fill) + ".tif"), format='TIFF', tiffinfo=info)
-        actual_img_corr.save(os.path.join(coef_output_dir_corr , prefix_merged + str(idx).zfill(number_fill) + ".tif"), format='TIFF', tiffinfo=info)
-        actual_img_raw_corr_no_gauss.save(os.path.join(coef_output_dir_corr_no_gauss , prefix_merged + str(idx).zfill(number_fill) + ".tif"), format='TIFF', tiffinfo=info)
-        
-        actual_img_raw_no_DC.save(os.path.join(coef_output_dir_raw_no_DC , prefix_merged + str(idx).zfill(number_fill) + ".tif"), format='TIFF', tiffinfo=info)
-        actual_img_raw_no_DC_g.save(os.path.join(coef_output_dir_raw_no_DC_g , prefix_merged + str(idx).zfill(number_fill) + ".tif"), format='TIFF', tiffinfo=info)
+            # create corrected image
+            actual_img_corr = Image.fromarray(np.clip(actual_img_arr_corr, 0, 65535).astype('uint16'))
 
-        # set previous img to current img
-        prev_raw_image = img_arr
-        prev_corr_image = actual_img_arr_corr
+            # save image with tiffinfo from original image to preserve metadata
+            actual_img_corr.save(os.path.join(img_dir_path, prefix_merged + str(idx).zfill(number_fill) + ".tif"), format='TIFF', tiffinfo=info)
 
-    recon()
+            # set previous img to current img
+            prev_corr_image = actual_img_arr_corr
+
+        recon(coef_label)
 
     # wait for all instances to be finished
     print("Waitung for reconstruction to finish . . .")
@@ -157,38 +127,31 @@ def main():
 
 
 # reconstruct using MuhRec with CLI params
-def recon():
+def recon(coef_label):
 
-    for sub_dir in output_dirs :
-        recon_label = os.path.basename(sub_dir)
-        print(f"Starting reconstruction for formula {recon_label}")
+    coef_input_mask = os.path.join(scans_dir, coef_label, recon_filemask)
+    coef_output_dir = os.path.join(recon_dir, coef_label)
+    Path(coef_output_dir).mkdir(parents=True)
 
-        recon_label = os.path.basename(sub_dir)
+    # Additional config
+    # first_slice=350
+    # last_slice=450
+    
+    # # select projection sub set
+    # first_index="projections:firstindex="+str(first_slice)
+    # last_index="projections:lastindex="+str(last_slice)
 
-        coef_input_mask = os.path.join(sub_dir, recon_filemask)
-        coef_output_dir = os.path.join(recon_dir, recon_label)
-        Path(coef_output_dir).mkdir(parents=True)
+    # set file mask for projections
+    file_mask="projections:filemask=" + coef_input_mask
 
-        # Additional config
-        # first_slice=350
-        # last_slice=450
-        
-        # # select projection sub set
-        # first_index="projections:firstindex="+str(first_slice)
-        # last_index="projections:lastindex="+str(last_slice)
+    # recon_slices = "projections:roi=" +
 
-        # set file mask for projections
-        file_mask="projections:filemask=" + coef_input_mask
+    # set output path for the matrix
+    matrix_path="matrix:path=" + coef_output_dir
 
-        # recon_slices = "projections:roi=" +
-
-        # set output path for the matrix
-        matrix_path="matrix:path=" + coef_output_dir
-
-        # call the reconstruction
-        # call([muhrec, "-f", cfgpath, file_mask, matrix_path])
-        muhrec_instances.append(Popen([muhrec, "-f", cfgpath, file_mask, matrix_path]))
-
+    # call the reconstruction
+    call([muhrec, "-f", cfgpath, file_mask, matrix_path])
+    #muhrec_instances.append(Popen([muhrec, "-f", cfgpath, file_mask, matrix_path]))
 
 
 # loads all images from the output_dir into global variables
@@ -217,11 +180,9 @@ def load_images():
         dc_imgs[file] = Image.open(source)
         dc_imgs_arr[file] = np.array(dc_imgs[file])
 
-        # Copy to subfolder for each formula
-        for formula in output_dirs :
-            
-            target = os.path.join(formula, file)
-            shutil.copyfile(source, target)
+        # Copy to subfolder
+        target = os.path.join(scans_dir, file)
+        shutil.copyfile(source, target)
 
     # copy OB images
     for file in ob_files :
@@ -231,11 +192,9 @@ def load_images():
         ob_imgs[file] = Image.open(source)
         ob_imgs_arr[file] = np.array(ob_imgs[file])
 
-        # Copy to subfolder for each formula
-        for formula in output_dirs :
-            
-            target = os.path.join(formula, file)
-            shutil.copyfile(source, target)
+        # Copy to subfolder
+        target = os.path.join(scans_dir, file)
+        shutil.copyfile(source, target)
 
     for file in ct_files :
         source = os.path.join(ct_dir, file)
