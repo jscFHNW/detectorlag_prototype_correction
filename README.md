@@ -1,4 +1,4 @@
-# IP5 Neutron Imaging
+# Neutron Imaging
 
 
 
